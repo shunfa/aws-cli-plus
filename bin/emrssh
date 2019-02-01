@@ -1,0 +1,97 @@
+#!/usr/bin/env python
+# -*- coding: UTF-8 -*-
+import ConfigParser
+import argparse
+import os
+import subprocess
+
+import boto3
+
+home = os.path.expanduser("~")
+key_root_path = home
+
+parser = argparse.ArgumentParser()
+parser.add_argument('-r', help='assign a region', dest='region')
+parser.add_argument('-c', help='copy deploy key?(y or n)', dest='flag_cpkey')
+parser.add_argument('-l', help='list all instances', dest='listins')
+
+args = parser.parse_args()
+
+config = ConfigParser.ConfigParser()
+config.read('%s/.aws/config' % home)
+region_name = config.get('default', 'region')
+flag_cpkey = True
+flag_listins = True
+if not args.region is None:
+    region_name = args.region
+if args.flag_cpkey is None:
+    flag_cpkey = False
+if args.listins is None:
+    flag_listins = False
+
+# region_name = 'us-east-1'
+print('\033[1;31;406m Region\033[0m: %s' % region_name)
+client = boto3.client('emr', region_name=region_name)
+
+
+def select_clusters():
+    res = client.list_clusters()
+    cluster_list = res['Clusters']
+    ready_count = 0
+
+    for i in range(len(cluster_list)):
+        if 'TERMINATED' not in cluster_list[i]['Status']['State']:
+            ready_count = ready_count + 1
+            print('[%d]\t%s(%s): %s' % (
+            i, cluster_list[i]['Name'], cluster_list[i]['Id'], cluster_list[i]['Status']['State']))
+    if ready_count == 0:
+        print("There is \033[1;31;406mNO\033[0m ready Clusters.")
+        exit(0)
+    mesg = '\033[1;31;406m Select a cluster: \033[0m \n'
+    try:
+        user_go = int(raw_input(mesg))
+    except ValueError:
+        print("Invalid input, exit section.")
+        exit(0)
+    keyName = get_cluster_key(cluster_list[user_go]['Id'])
+
+    # deploy keys
+    if flag_cpkey:
+        print('copy deploy keys.')
+        cmd = 'aws emr put --cluster-id %s --key-pair-file %s/%s.pem --src %s/%s.pem --dest /home/hadoop/%s.pem' % (
+        cluster_list[user_go]['Id'], key_root_path, keyName, key_root_path, keyName, keyName)
+        print("cmd: %s" % (cmd))
+        retcode = subprocess.call(cmd, shell=True)
+        print(retcode)
+
+    # list instances
+    if flag_listins:
+        list_instances(cluster_list[user_go]['Id'], keyName)
+
+    console_url = 'https://console.aws.amazon.com/elasticmapreduce/home?region=%s#cluster-details:%s' % (
+    region_name, cluster_list[user_go]['Id'])
+    # ssh
+    cmd = 'aws emr ssh --cluster-id %s --key-pair-file %s/%s.pem --region %s' % (
+    cluster_list[user_go]['Id'], key_root_path, keyName, region_name)
+    print("cmd: %s" % (cmd))
+    print("\033[1;33;400mAWS Console URL:\033[0m %s" % (console_url))
+    retcode = subprocess.call(cmd, shell=True)
+    print(retcode)
+
+def get_cluster_key(cluster_id):
+    res = client.describe_cluster(ClusterId=cluster_id)['Cluster']['Ec2InstanceAttributes']['Ec2KeyName']
+    return res.strip()
+
+def list_instances(cluster_id, cluster_key):
+    ins_typ = ['MASTER','CORE', 'TASK']
+    for type in ins_typ:
+        res = client.list_instances(ClusterId=cluster_id, InstanceGroupTypes=[type], InstanceStates=['RUNNING'])['Instances']
+        if len(res) > 0:
+            print("\033[1;35;400m## %s(%s) ##\033[0m" % (type, len(res)))
+            for i in range(len(res)):
+                #print(('%s: ssh -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no -o ServerAliveInterval=10 -i /home/hadoop/%s.pem  hadoop@%s -t')%(res[i]['PrivateDnsName'], cluster_key, res[i]['PrivateDnsName']))
+                print(('%s: ssh -i /home/hadoop/%s.pem hadoop@%s -t')%(res[i]['PrivateDnsName'], cluster_key, res[i]['PrivateDnsName']))
+
+
+if __name__ == '__main__':
+    select_clusters()
