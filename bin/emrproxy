@@ -22,7 +22,6 @@ config.read('%s/.aws/config' % home)
 region_name = config.get('default', 'region')
 flag_cpkey = True
 flag_listins = True
-
 if not args.region is None:
     region_name = args.region
 if args.flag_cpkey is None:
@@ -55,27 +54,16 @@ def select_clusters():
         print("Invalid input, exit section.")
         exit(0)
     keyName = get_cluster_key(cluster_list[user_go]['Id'])
+    MasterPublicDnsName = get_master_public_dns(cluster_list[user_go]['Id'])
 
-    # deploy keys
-    if flag_cpkey:
-        print('copy deploy keys.')
-        cmd = 'aws emr put --cluster-id %s --key-pair-file %s/%s.pem --src %s/%s.pem --dest /home/hadoop/%s.pem' % (
-        cluster_list[user_go]['Id'], key_root_path, keyName, key_root_path, keyName, keyName)
-        print("cmd: %s" % (cmd))
-        retcode = subprocess.call(cmd, shell=True)
-        print(retcode)
+    list_application_web_url(cluster_list[user_go]['Id'],MasterPublicDnsName)
+    # ssh proxy
+    cmd = 'ssh -i %s/%s.pem -ND 8157 hadoop@%s' % (
+        key_root_path, keyName, MasterPublicDnsName
+    )
 
-    # list instances
-    if flag_listins:
-        list_instances(cluster_list[user_go]['Id'], keyName)
-
-    console_url = 'https://console.aws.amazon.com/elasticmapreduce/home?region=%s#cluster-details:%s' % (
-    region_name, cluster_list[user_go]['Id'])
-    # ssh
-    cmd = 'aws emr ssh --cluster-id %s --key-pair-file %s/%s.pem --region %s' % (
-    cluster_list[user_go]['Id'], key_root_path, keyName, region_name)
     print("cmd: %s" % (cmd))
-    print("\033[1;33;400mAWS Console URL:\033[0m %s" % (console_url))
+    #print("\033[1;33;400mAWS Console URL:\033[0m %s" % (console_url))
     retcode = subprocess.call(cmd, shell=True)
     print(retcode)
 
@@ -83,16 +71,22 @@ def get_cluster_key(cluster_id):
     res = client.describe_cluster(ClusterId=cluster_id)['Cluster']['Ec2InstanceAttributes']['Ec2KeyName']
     return res.strip()
 
-def list_instances(cluster_id, cluster_key):
-    ins_typ = ['MASTER','CORE', 'TASK']
-    for type in ins_typ:
-        res = client.list_instances(ClusterId=cluster_id, InstanceGroupTypes=[type], InstanceStates=['RUNNING'])['Instances']
-        if len(res) > 0:
-            print("\033[1;35;400m## %s(%s) ##\033[0m" % (type, len(res)))
-            for i in range(len(res)):
-                #print(('%s: ssh -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no -o ServerAliveInterval=10 -i /home/hadoop/%s.pem  hadoop@%s -t')%(res[i]['PrivateDnsName'], cluster_key, res[i]['PrivateDnsName']))
-                print(('%s: ssh -i /home/hadoop/%s.pem hadoop@%s -t')%(res[i]['PrivateDnsName'], cluster_key, res[i]['PrivateDnsName']))
+def get_master_public_dns(cluster_id):
+    res = client.describe_cluster(ClusterId=cluster_id)['Cluster']['MasterPublicDnsName']
+    return res.strip()
 
+
+def list_application_web_url(cluster_id, master_dns):
+    master_url = 'http://%s' % master_dns
+    application_list = client.describe_cluster(ClusterId=cluster_id)['Cluster']['Applications']
+    for i in range(len(application_list)):
+        if 'Hadoop' in application_list[i]['Name']:
+            print("\033[1;33;400mResource Manager:\033[0m %s:8088/" % (master_url))
+            print("\033[1;33;400mHDFS Name Node:\033[0m %s:50070/" % (master_url))
+        if 'Hbase' in application_list[i]['Name']:
+            print("\033[1;33;400mHBase:\033[0m %s:16010/" % (master_url))
+        if 'Spark' in application_list[i]['Name']:
+            print("\033[1;33;400mSpark:\033[0m %s:18080/" % (master_url))
 
 if __name__ == '__main__':
     select_clusters()
